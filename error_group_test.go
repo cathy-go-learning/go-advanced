@@ -2,70 +2,50 @@ package go_advanced
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"golang.org/x/sync/errgroup"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"testing"
-	"time"
-
-	"golang.org/x/sync/errgroup"
 )
 
-func startHttpServer(wg *sync.WaitGroup) *http.Server {
-	srv := &http.Server{Addr: ":8080"}
+var srv = &http.Server{Addr: ":8080"}
 
+func startHttpServer() error {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "hello world\n")
 	})
-
-	go func() {
-		defer wg.Done()
-
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-			log.Fatalf("ListenAndServe(): %v", err)
-		}
-	}()
-
-	return srv
+	return srv.ListenAndServe()
 }
 
-func notifySignal(wg *sync.WaitGroup) {
+func notifySignal() error {
 	c := make(chan os.Signal)
-	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM,
-		syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2)
-	go func() {
-		for s := range c {
-			switch s {
-			case syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT:
-				fmt.Println("Program Exit...", s)
-				wg.Done()
-			case syscall.SIGUSR1:
-				fmt.Println("usr1 signal", s)
-			case syscall.SIGUSR2:
-				fmt.Println("usr2 signal", s)
-			default:
-				fmt.Println("other signal", s)
-			}
+	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	for s := range c {
+		switch s {
+		case syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT:
+			return errors.New("Exiting Program")
+		default:
+			fmt.Println("other signal", s)
 		}
-	}()
+	}
+	return nil
 }
 
 func TestErrorGroup(t *testing.T) {
-	wg := &sync.WaitGroup{}
+	g, ctx := errgroup.WithContext(context.Background())
 
-	wg.Add(1)
-	srv := startHttpServer(wg)
+	g.Go(startHttpServer)
+	g.Go(notifySignal)
 
-	time.Sleep(10 * time.Second)
-
-	if err := srv.Shutdown(context.TODO()); err != nil {
-		panic(err)
+	err := g.Wait()
+	println(err)
+	println(ctx.Err())
+	if err != nil {
+		srv.Shutdown(ctx)
 	}
-
-	wg.Wait()
 }
